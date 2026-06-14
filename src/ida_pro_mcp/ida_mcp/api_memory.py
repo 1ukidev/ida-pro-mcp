@@ -62,6 +62,14 @@ class IntWriteResult(TypedDict):
     error: NotRequired[str]
 
 
+class PatchedBlock(TypedDict):
+    start_addr: str
+    end_addr: str
+    size: int
+    original: str
+    patched: str
+
+
 # ============================================================================
 # Memory Reading Operations
 # ============================================================================
@@ -338,3 +346,86 @@ def put_int(
             )
 
     return results
+
+
+@tool
+@idasync
+def get_patched_bytes(
+    start_addr: Annotated[
+        str | None,
+        "Optional starting linear address (hex or decimal) to search from. Defaults to min_ea.",
+    ] = None,
+    end_addr: Annotated[
+        str | None,
+        "Optional ending linear address (hex or decimal) to search to. Defaults to max_ea.",
+    ] = None,
+) -> list[PatchedBlock]:
+    """Retrieve list of patched (modified) bytes grouped into contiguous blocks."""
+    from . import compat
+
+    try:
+        ea_start = parse_address(start_addr) if (start_addr and start_addr.strip()) else compat.inf_get_min_ea()
+    except Exception:
+        raise ValueError(f"Invalid start address: {start_addr}")
+
+    try:
+        ea_end = parse_address(end_addr) if (end_addr and end_addr.strip()) else compat.inf_get_max_ea()
+    except Exception:
+        raise ValueError(f"Invalid end address: {end_addr}")
+
+    patched_bytes = []
+
+    def callback(ea, fpos, org_val, patch_val):
+        patched_bytes.append((ea, fpos, org_val, patch_val))
+        return 0
+
+    ida_bytes.visit_patched_bytes(ea_start, ea_end, callback)
+
+    blocks: list[PatchedBlock] = []
+    current_block = None
+
+    patched_bytes.sort(key=lambda x: x[0])
+
+    for ea, fpos, org_val, patch_val in patched_bytes:
+        if current_block is None:
+            current_block = {
+                "start_addr": f"{ea:#x}",
+                "end_addr": f"{ea + 1:#x}",
+                "size": 1,
+                "original_list": [org_val],
+                "patched_list": [patch_val],
+                "last_ea": ea,
+            }
+        elif ea == current_block["last_ea"] + 1:
+            current_block["end_addr"] = f"{ea + 1:#x}"
+            current_block["size"] += 1
+            current_block["original_list"].append(org_val)
+            current_block["patched_list"].append(patch_val)
+            current_block["last_ea"] = ea
+        else:
+            blocks.append({
+                "start_addr": current_block["start_addr"],
+                "end_addr": current_block["end_addr"],
+                "size": current_block["size"],
+                "original": " ".join(f"{b:02x}" for b in current_block["original_list"]),
+                "patched": " ".join(f"{b:02x}" for b in current_block["patched_list"]),
+            })
+            current_block = {
+                "start_addr": f"{ea:#x}",
+                "end_addr": f"{ea + 1:#x}",
+                "size": 1,
+                "original_list": [org_val],
+                "patched_list": [patch_val],
+                "last_ea": ea,
+            }
+
+    if current_block is not None:
+        blocks.append({
+            "start_addr": current_block["start_addr"],
+            "end_addr": current_block["end_addr"],
+            "size": current_block["size"],
+            "original": " ".join(f"{b:02x}" for b in current_block["original_list"]),
+            "patched": " ".join(f"{b:02x}" for b in current_block["patched_list"]),
+        })
+
+    return blocks

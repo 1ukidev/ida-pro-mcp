@@ -21,6 +21,7 @@ from ..api_memory import (
     get_global_value,
     patch,
     put_int,
+    get_patched_bytes,
 )
 from ..utils import read_bytes_bss_safe, read_int_bss_safe
 
@@ -368,3 +369,35 @@ def test_get_global_value_bss_symbol_is_zero():
     assert all(int(p, 16) == 0 for p in parts), (
         f"expected all zeros for BSS global {name}, got {value_str!r}"
     )
+
+
+@test()
+def test_get_patched_bytes_lists_changes():
+    """get_patched_bytes correctly lists modifications."""
+    data_addr = get_data_address()
+    if not data_addr:
+        skip_test("binary has no data segment")
+
+    original = get_bytes({"addr": data_addr, "size": 4})[0]
+    assert_ok(original, "data")
+    original_data = original["data"]
+    original_plain = _plain_hex_bytes(original_data)
+    replacement = "90 90 90 90"
+    if original_plain == replacement.replace(" ", ""):
+        replacement = "cc cc cc cc"
+
+    try:
+        patched = patch({"addr": data_addr, "data": replacement})[0]
+        assert "error" not in patched
+
+        blocks = get_patched_bytes(data_addr, hex(int(data_addr, 0) + 4))
+        matched = False
+        for block in blocks:
+            if int(block["start_addr"], 16) == int(data_addr, 16):
+                assert block["size"] == 4
+                assert block["patched"].replace(" ", "") == replacement.replace(" ", "")
+                matched = True
+                break
+        assert matched, f"Expected patch at {data_addr} was not returned by get_patched_bytes"
+    finally:
+        patch({"addr": data_addr, "data": original_plain})
